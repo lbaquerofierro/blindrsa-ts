@@ -64,38 +64,81 @@ export class BlindRSA {
     // in bits and in bytes of the modulus, and the hash function used.
     private async extractKeyParams(
         key: CryptoKey,
-        type: 'public' | 'private',
+        type: 'public' | 'private'
     ): Promise<{
         jwkKey: JsonWebKey;
         modulusLengthBits: number;
         modulusLengthBytes: number;
         hash: string;
     }> {
+        console.log('Entering extractKeyParams with key:', key);
+
         if (key.type !== type) {
             throw new Error(`key is not ${type}`);
-        }
-        const algorithmNames = [BlindRSA.NAME];
-        if (this.params.supportsRSARAW) {
-            algorithmNames.push(NATIVE_SUPPORT_NAME);
-        }
-        if (!algorithmNames.includes(key.algorithm.name)) {
-            throw new Error(`key is not ${BlindRSA.NAME}`);
         }
         if (!key.extractable) {
             throw new Error('key is not extractable');
         }
 
-        const { modulusLength: modulusLengthBits, hash: hashFn } =
-            key.algorithm as RsaHashedKeyGenParams;
-        const modulusLengthBytes = Math.ceil(modulusLengthBits / 8);
-        const hash = (hashFn as Algorithm).name;
-        if (hash.toLowerCase() !== this.params.hash.toLowerCase()) {
-            throw new Error(`hash is not ${this.params.hash}`);
-        }
-        const jwkKey = await crypto.subtle.exportKey('jwk', key);
+        let modulusLengthBits = 0;
+        let modulusLengthBytes = 0;
+        let hashName = this.params.hash;
 
-        return { jwkKey, modulusLengthBits, modulusLengthBytes, hash };
+        if (key.algorithm) {
+            console.log('Key algorithm exists:', key.algorithm);
+
+            // Set the hash parameter if possible.
+            try {
+                (key.algorithm as RsaHashedKeyGenParams).hash = this.params.hash;
+            } catch (e) {
+                console.error('Error setting hash on key.algorithm:', e);
+            }
+
+            // If the algorithm name is not RSA-RAW, verify that it matches expected names.
+            if (key.algorithm.name !== 'RSA-RAW') {
+                const validAlgorithmNames = [BlindRSA.NAME];
+                if (this.params.supportsRSARAW) {
+                    validAlgorithmNames.push(NATIVE_SUPPORT_NAME);
+                }
+                if (!validAlgorithmNames.includes(key.algorithm.name)) {
+                    throw new Error(`key is not ${BlindRSA.NAME}`);
+                }
+            } else {
+                console.log('Using RSA-RAW algorithm');
+            }
+
+            // Try to extract modulus length and hash details if available.
+            const rsaParams = key.algorithm as RsaHashedKeyGenParams;
+            if (rsaParams.modulusLength) {
+                modulusLengthBits = rsaParams.modulusLength;
+                modulusLengthBytes = Math.ceil(modulusLengthBits / 8);
+                if (rsaParams.hash && (rsaParams.hash as Algorithm).name) {
+                    hashName = (rsaParams.hash as Algorithm).name;
+                    if (hashName.toLowerCase() !== this.params.hash.toLowerCase()) {
+                        throw new Error(`hash is not ${this.params.hash}`);
+                    }
+                }
+            } else {
+                console.warn('modulusLength not available on key.algorithm; using defaults.');
+            }
+        } else {
+            // If key.algorithm is undefined, assume RSA-RAW defaults.
+            console.log('key.algorithm is undefined; assuming RSA-RAW defaults.');
+        }
+
+        // Attempt to export the key as JWK
+        let jwkKey: JsonWebKey;
+        try {
+            jwkKey = await crypto.subtle.exportKey('jwk', key);
+            console.log('Exported JWK key:', jwkKey);
+        } catch (e) {
+            console.error('Error exporting key to JWK:', e);
+            throw new Error(`internal error; reference = ${e}`);
+        }
+
+        return { jwkKey, modulusLengthBits, modulusLengthBytes, hash: hashName };
     }
+
 
     async blind(publicKey: CryptoKey, msg: Uint8Array): Promise<BlindOutput> {
         const {
